@@ -1,0 +1,165 @@
+VIRTUAL DESKTOP MANAGEMENT SCRIPT - DETAILED SPECIFICATIONS
+===========================================================
+
+OVERVIEW:
+--------
+This PowerShell script creates and manages three virtual desktops on Windows 10/11 with specific applications 
+positioned in an exact tiled layout. Each desktop serves a different purpose with carefully arranged applications.
+
+SYSTEM REQUIREMENTS:
+-------------------
+- Windows 10/11 (version 2004 or later recommended for desktop naming)
+- Single monitor: 3840x2160 resolution (4K)
+- PowerShell 7
+- VirtualDesktop module (version 2.0 or newer)
+- Applications must be installed at specified paths
+
+MONITOR LAYOUT SPECIFICATION:
+----------------------------
+Total Screen: 3840x2160 pixels
+
+The screen is divided into THREE precise regions with NO GAPS:
+
+1. LEFT REGION (Primary/Main Application Area):
+   - Position: X=0, Y=0
+   - Size: 1920x2160 pixels
+   - Coverage: Exact left half of screen (50% width, 100% height)
+   - Purpose: Main working application
+
+2. RIGHT-TOP REGION (Secondary Application Area):
+   - Position: X=1920, Y=0  
+   - Size: 1920x1080 pixels
+   - Coverage: Top-right quarter of screen (50% width, 50% height)
+   - Purpose: Supporting/reference application
+
+3. RIGHT-BOTTOM REGION (Tertiary Application Area):
+   - Position: X=1920, Y=1080
+   - Size: 1920x1080 pixels  
+   - Coverage: Bottom-right quarter of screen (50% width, 50% height)
+   - Purpose: Communication/auxiliary application
+
+VIRTUAL DESKTOP CONFIGURATIONS:
+==============================
+
+DESKTOP 1: "Plan" 
+-----------------
+Purpose: Planning, note-taking, and AI assistance
+
+Applications and Layout:
+├── LEFT (1920x2160): Evernote
+│   ├── Path: C:\Users\payam\AppData\Local\Programs\Evernote\Evernote.exe
+│   ├── Args: None
+│   └── Purpose: Main note-taking and planning application
+│
+├── RIGHT-TOP (1920x1080): Brave Browser - PlanBrowse Profile
+│   ├── Path: C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe
+│   ├── Args: --profile-directory=PlanBrowse
+│   └── Purpose: General browsing for planning research
+│
+└── RIGHT-BOTTOM (1920x1080): Brave Browser - PlanChat PWA
+    ├── Path: C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe
+    ├── Args: --profile-directory=PlanChat --app=https://chat.openai.com
+    └── Purpose: ChatGPT as Progressive Web App for AI assistance
+
+DESKTOP 2: "Code"
+----------------
+Purpose: Software development and coding assistance
+
+Applications and Layout:
+├── LEFT (1920x2160): Cursor Code Editor
+│   ├── Path: C:\Users\payam\AppData\Local\Programs\cursor\Cursor.exe
+│   ├── Args: None
+│   └── Purpose: Primary code editor for development work
+│
+├── RIGHT-TOP (1920x1080): Brave Browser - CodeBrowse Profile  
+│   ├── Path: C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe
+│   ├── Args: --profile-directory=CodeBrowse
+│   └── Purpose: Technical documentation, Stack Overflow, GitHub browsing
+│
+└── RIGHT-BOTTOM (1920x1080): Brave Browser - CodeChat PWA
+    ├── Path: C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe
+    ├── Args: --profile-directory=CodeChat --app=https://chat.openai.com
+    └── Purpose: ChatGPT PWA for coding assistance and debugging help
+
+DESKTOP 3: "Entertainment"
+-------------------------
+Purpose: Leisure activities and content consumption
+
+Applications and Layout:
+├── LEFT (1920x2160): Brave Browser - NBA Live Streaming
+│   ├── Path: C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe
+│   ├── Args: --profile-directory=NBALive https://nbabite.to
+│   └── Purpose: NBA game streaming via nbabite.to
+│
+├── RIGHT-TOP (1920x1080): Brave Browser - Reddit
+│   ├── Path: C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe
+│   ├── Args: --profile-directory=Reddit https://reddit.com
+│   └── Purpose: Reddit browsing for entertainment and discussion
+│
+└── RIGHT-BOTTOM: UNUSED
+    └── Purpose: Available for additional entertainment applications
+
+TECHNICAL IMPLEMENTATION DETAILS:
+=================================
+
+Window Positioning Strategy:
+---------------------------
+- Uses aggressive 4-method sequential positioning approach
+- Methods: ShowWindow+MoveWindow, SetWindowPos, ShowWindow+MoveWindow, SetWindowPos
+- Tolerance: 100 pixels for window chrome and OS constraints
+- Returns success if positioning attempted (some applications resist exact positioning)
+
+Window Detection Strategy:
+-------------------------
+- Enhanced window finding with 20 attempts maximum
+- Validates window size (minimum 100x100) to avoid splash screens
+- Progressive wait times: 500ms → 1000ms → 2000ms between attempts
+- Checks both launched process and all processes with same executable
+
+Desktop Management:
+------------------
+- Creates virtual desktops using VirtualDesktop PowerShell module
+- Caches desktop references to avoid recreation
+- Attempts to name desktops (Windows 10 2004+/Windows 11 only)
+- Moves windows to target desktop before positioning
+
+Error Handling and Logging:
+---------------------------
+- Comprehensive logging with timestamps and color coding
+- Dry-run mode for testing without launching applications
+- Graceful handling of missing applications or positioning failures
+- Detailed debug information for troubleshooting
+
+Timing and Synchronization:
+--------------------------
+- 5-second delay after application launch for initialization
+- 5-second delay between launching different applications
+- Additional waits during window positioning operations
+- Desktop creation synchronization delays
+
+EXPECTED BEHAVIOR:
+=================
+
+Startup Sequence:
+1. Load VirtualDesktop module and SimpleWin32 API
+2. Create three virtual desktops (Plan, Code, Entertainment)
+3. For each desktop:
+   a. Launch first application and wait for window
+   b. Move window to target desktop
+   c. Position window in designated region
+   d. Repeat for remaining applications
+4. Report completion status
+
+Visual Result:
+- Three virtual desktops accessible via Windows Task View (Win+Tab)
+- Each desktop with applications perfectly tiled in specified regions
+- No window overlapping, exact screen space utilization
+- Seamless workspace switching between different activity contexts
+
+TROUBLESHOOTING NOTES:
+=====================
+- Some applications may resist exact positioning due to internal constraints
+- Brave browser profiles must exist before script execution
+- Desktop naming may fail on older Windows versions (non-critical)
+- Window positioning success depends on application cooperation
+- Script requires applications to be installed at specified paths 
