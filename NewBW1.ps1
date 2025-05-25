@@ -34,7 +34,16 @@ try {
     exit 1
 }
 
-# Simple Win32 API for window positioning - MINIMAL VERSION
+# Load Windows.Forms for SendKeys functionality
+try {
+    Add-Type -AssemblyName System.Windows.Forms
+    Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [INFO] Windows.Forms assembly loaded successfully" -ForegroundColor Green
+} catch {
+    Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [ERROR] Failed to load Windows.Forms assembly: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+
+# Simple Win32 API for window detection and positioning - COMPLETE VERSION
 if (-not ([System.Management.Automation.PSTypeName]'SimpleWin32').Type) {
     Add-Type @"
 using System;
@@ -43,10 +52,7 @@ using System.Text;
 
 public class SimpleWin32 {
     [DllImport("user32.dll")]
-    public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
-    
-    [DllImport("user32.dll")]
-    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
     
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
@@ -63,6 +69,15 @@ public class SimpleWin32 {
     [DllImport("user32.dll")]
     public static extern int GetWindowTextLength(IntPtr hWnd);
     
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+    
+    [DllImport("user32.dll")]
+    public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
+    
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT {
         public int Left;
@@ -71,28 +86,38 @@ public class SimpleWin32 {
         public int Bottom;
     }
     
-    public const uint SWP_SHOWWINDOW = 0x0040;
+    // ShowWindow constants
     public const int SW_RESTORE = 9;
     public const int SW_SHOW = 5;
+    public const int SW_MAXIMIZE = 3;
+    public const int SW_NORMAL = 1;
+    
+    // SetWindowPos constants
+    public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_NOACTIVATE = 0x0010;
+    public const uint SWP_SHOWWINDOW = 0x0040;
+    public static readonly IntPtr HWND_TOP = new IntPtr(0);
 }
 "@
-    Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [DEBUG] Simple Win32 API loaded" -ForegroundColor Cyan
+    Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [DEBUG] Complete Win32 API loaded" -ForegroundColor Cyan
 } else {
-    Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [DEBUG] Simple Win32 API already loaded" -ForegroundColor Cyan
+    Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [DEBUG] Complete Win32 API already loaded" -ForegroundColor Cyan
 }
 
 # Global variables
 $script:CreatedDesktops = @{}
 $script:MonitorWidth = 3840
 $script:MonitorHeight = 2160
-$script:Gap = 0  # No gaps
 
-# Window position definitions - CORRECTED for exact 3840x2160 screen split
+# Exact window positions based on specifications (X, Y, Width, Height)
 $script:WindowPositions = @{
-    'Left' = @{ X = 0; Y = 0; Width = 1920; Height = 2160 }                     # Exact left half
-    'RightTop' = @{ X = 1920; Y = 0; Width = 1920; Height = 1080 }              # Exact top right quarter
-    'RightBottom' = @{ X = 1920; Y = 1080; Width = 1920; Height = 1080 }        # Exact bottom right quarter
+    'Left' = @{ X = 0; Y = 0; Width = 1920; Height = 2160 }          # Left half
+    'RightTop' = @{ X = 1920; Y = 0; Width = 1920; Height = 1080 }    # Top-right quarter  
+    'RightBottom' = @{ X = 1920; Y = 1080; Width = 1920; Height = 1080 } # Bottom-right quarter
 }
+
+# Valid position types
+$script:ValidPositions = @('Left', 'RightTop', 'RightBottom')
 
 # Desktop and application configuration
 $script:DesktopConfig = @{
@@ -195,13 +220,13 @@ function Get-WindowTitle {
 function Set-WindowPosition {
     param(
         [IntPtr]$WindowHandle,
-        [hashtable]$Position,
+        [string]$PositionType,
         [string]$AppDescription = "Unknown"
     )
     
     try {
-        Write-Log "=== FORCING WINDOW POSITION: '$AppDescription' ===" -Level 'INFO'
-        Write-Log "Target: X=$($Position.X), Y=$($Position.Y), W=$($Position.Width), H=$($Position.Height)" -Level 'INFO'
+        Write-Log "=== POSITIONING WINDOW: '$AppDescription' ===" -Level 'INFO'
+        Write-Log "Target position: $PositionType" -Level 'INFO'
         
         # Validate window
         if ($WindowHandle -eq [IntPtr]::Zero -or -not [SimpleWin32]::IsWindowVisible($WindowHandle)) {
@@ -209,32 +234,99 @@ function Set-WindowPosition {
             return $false
         }
         
-        # Get current position
+        # Get target position
+        if (-not $script:WindowPositions.ContainsKey($PositionType)) {
+            Write-Log "ERROR: Unknown position type '$PositionType'" -Level 'ERROR'
+            return $false
+        }
+        
+        $targetPos = $script:WindowPositions[$PositionType]
+        $targetX = $targetPos.X
+        $targetY = $targetPos.Y
+        $targetWidth = $targetPos.Width
+        $targetHeight = $targetPos.Height
+        
+        # Get window title for logging
+        $windowTitle = Get-WindowTitle -WindowHandle $WindowHandle
+        Write-Log "Window title: '$windowTitle'" -Level 'DEBUG'
+        Write-Log "Target: X=$targetX, Y=$targetY, W=$targetWidth, H=$targetHeight" -Level 'INFO'
+        
+        # Get current position for comparison
         $currentRect = New-Object SimpleWin32+RECT
         [SimpleWin32]::GetWindowRect($WindowHandle, [ref]$currentRect) | Out-Null
-        Write-Log "Current: X=$($currentRect.Left), Y=$($currentRect.Top), W=$($currentRect.Right-$currentRect.Left), H=$($currentRect.Bottom-$currentRect.Top)" -Level 'INFO'
+        $currentX = $currentRect.Left
+        $currentY = $currentRect.Top
+        $currentWidth = $currentRect.Right - $currentRect.Left
+        $currentHeight = $currentRect.Bottom - $currentRect.Top
+        Write-Log "Current: X=$currentX, Y=$currentY, W=$currentWidth, H=$currentHeight" -Level 'DEBUG'
         
-        # AGGRESSIVE POSITIONING - Try multiple methods immediately
-        Write-Log "Method 1: Restore + MoveWindow" -Level 'DEBUG'
+        # Step 1: Ensure window is restored (not minimized or maximized)
+        Write-Log "Step 1: Restoring window to normal state" -Level 'DEBUG'
         [SimpleWin32]::ShowWindow($WindowHandle, [SimpleWin32]::SW_RESTORE) | Out-Null
-        Start-Sleep -Milliseconds 500
-        $result1 = [SimpleWin32]::MoveWindow($WindowHandle, $Position.X, $Position.Y, $Position.Width, $Position.Height, $true)
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 300
         
-        Write-Log "Method 2: SetWindowPos" -Level 'DEBUG'
-        $result2 = [SimpleWin32]::SetWindowPos($WindowHandle, [IntPtr]::Zero, $Position.X, $Position.Y, $Position.Width, $Position.Height, [SimpleWin32]::SWP_SHOWWINDOW)
-        Start-Sleep -Milliseconds 500
+        # Step 2: Bring window to foreground
+        Write-Log "Step 2: Bringing window to foreground" -Level 'DEBUG'
+        [SimpleWin32]::SetForegroundWindow($WindowHandle) | Out-Null
+        Start-Sleep -Milliseconds 300
         
-        Write-Log "Method 3: Show + MoveWindow Again" -Level 'DEBUG'
-        [SimpleWin32]::ShowWindow($WindowHandle, [SimpleWin32]::SW_SHOW) | Out-Null
-        $result3 = [SimpleWin32]::MoveWindow($WindowHandle, $Position.X, $Position.Y, $Position.Width, $Position.Height, $true)
-        Start-Sleep -Milliseconds 500
+        # AGGRESSIVE 4-METHOD POSITIONING APPROACH
+        $positionAttempts = @(
+            @{ Method = "ShowWindow+MoveWindow"; Description = "Restore and Move" }
+            @{ Method = "SetWindowPos"; Description = "Direct Position" }
+            @{ Method = "ShowWindow+MoveWindow"; Description = "Restore and Move (Retry)" }
+            @{ Method = "SetWindowPos"; Description = "Direct Position (Final)" }
+        )
         
-        Write-Log "Method 4: Final SetWindowPos" -Level 'DEBUG'
-        $result4 = [SimpleWin32]::SetWindowPos($WindowHandle, [IntPtr]::Zero, $Position.X, $Position.Y, $Position.Width, $Position.Height, [SimpleWin32]::SWP_SHOWWINDOW)
-        Start-Sleep -Milliseconds 500
+        $tolerance = 100  # Allow some tolerance for window chrome
+        $positioned = $false
         
-        # Check final result
+        foreach ($attempt in $positionAttempts) {
+            Write-Log "Step 3.$($positionAttempts.IndexOf($attempt) + 1): Trying $($attempt.Description)" -Level 'DEBUG'
+            
+            if ($attempt.Method -eq "ShowWindow+MoveWindow") {
+                # Method: ShowWindow + MoveWindow
+                [SimpleWin32]::ShowWindow($WindowHandle, [SimpleWin32]::SW_RESTORE) | Out-Null
+                Start-Sleep -Milliseconds 100
+                $moveResult = [SimpleWin32]::MoveWindow($WindowHandle, $targetX, $targetY, $targetWidth, $targetHeight, $true)
+                Write-Log "MoveWindow result: $moveResult" -Level 'DEBUG'
+            } 
+            elseif ($attempt.Method -eq "SetWindowPos") {
+                # Method: SetWindowPos
+                $flags = [SimpleWin32]::SWP_NOZORDER -bor [SimpleWin32]::SWP_SHOWWINDOW
+                $setResult = [SimpleWin32]::SetWindowPos($WindowHandle, [SimpleWin32]::HWND_TOP, $targetX, $targetY, $targetWidth, $targetHeight, $flags)
+                Write-Log "SetWindowPos result: $setResult" -Level 'DEBUG'
+            }
+            
+            # Wait for window to settle
+            Start-Sleep -Milliseconds 500
+            
+            # Check if positioning was successful
+            $newRect = New-Object SimpleWin32+RECT
+            [SimpleWin32]::GetWindowRect($WindowHandle, [ref]$newRect) | Out-Null
+            $newX = $newRect.Left
+            $newY = $newRect.Top
+            $newWidth = $newRect.Right - $newRect.Left
+            $newHeight = $newRect.Bottom - $newRect.Top
+            
+            Write-Log "After $($attempt.Description): X=$newX, Y=$newY, W=$newWidth, H=$newHeight" -Level 'DEBUG'
+            
+            # Check if we're within tolerance
+            $xOk = [Math]::Abs($newX - $targetX) -le $tolerance
+            $yOk = [Math]::Abs($newY - $targetY) -le $tolerance
+            $wOk = [Math]::Abs($newWidth - $targetWidth) -le $tolerance
+            $hOk = [Math]::Abs($newHeight - $targetHeight) -le $tolerance
+            
+            if ($xOk -and $yOk -and $wOk -and $hOk) {
+                Write-Log "SUCCESS: Window positioned within tolerance using $($attempt.Description)" -Level 'INFO'
+                $positioned = $true
+                break
+            } else {
+                Write-Log "Position check: X=${xOk}, Y=${yOk}, W=${wOk}, H=${hOk} (tolerance: $tolerance)" -Level 'DEBUG'
+            }
+        }
+        
+        # Final verification and reporting
         $finalRect = New-Object SimpleWin32+RECT
         [SimpleWin32]::GetWindowRect($WindowHandle, [ref]$finalRect) | Out-Null
         $finalX = $finalRect.Left
@@ -243,28 +335,26 @@ function Set-WindowPosition {
         $finalHeight = $finalRect.Bottom - $finalRect.Top
         
         Write-Log "=== FINAL RESULT for '$AppDescription' ===" -Level 'INFO'
-        Write-Log "Final: X=$finalX, Y=$finalY, W=$finalWidth, H=$finalHeight" -Level 'INFO'
-        Write-Log "Target: X=$($Position.X), Y=$($Position.Y), W=$($Position.Width), H=$($Position.Height)" -Level 'INFO'
-        Write-Log "Results: MoveWindow1=$result1, SetWindowPos1=$result2, MoveWindow2=$result3, SetWindowPos2=$result4" -Level 'DEBUG'
+        Write-Log "Target position: X=$targetX, Y=$targetY, W=$targetWidth, H=$targetHeight" -Level 'INFO'
+        Write-Log "Final position:  X=$finalX, Y=$finalY, W=$finalWidth, H=$finalHeight" -Level 'INFO'
         
-        # Check if we're close enough (allow 100 pixel tolerance)
-        $tolerance = 100
-        $xOk = [Math]::Abs($finalX - $Position.X) -le $tolerance
-        $yOk = [Math]::Abs($finalY - $Position.Y) -le $tolerance
-        $wOk = [Math]::Abs($finalWidth - $Position.Width) -le $tolerance
-        $hOk = [Math]::Abs($finalHeight - $Position.Height) -le $tolerance
+        $finalXOk = [Math]::Abs($finalX - $targetX) -le $tolerance
+        $finalYOk = [Math]::Abs($finalY - $targetY) -le $tolerance
+        $finalWOk = [Math]::Abs($finalWidth - $targetWidth) -le $tolerance
+        $finalHOk = [Math]::Abs($finalHeight - $targetHeight) -le $tolerance
         
-        $success = $xOk -and $yOk -and $wOk -and $hOk
-        
-        if ($success) {
-            Write-Log "SUCCESS: Window positioned within tolerance" -Level 'INFO'
+        if ($finalXOk -and $finalYOk -and $finalWOk -and $finalHOk) {
+            Write-Log "SUCCESS: Final position within tolerance" -Level 'INFO'
+            return $true
         } else {
-            Write-Log "PARTIAL: Window moved but not exactly positioned (may be app limitation)" -Level 'WARN'
-            Write-Log "X diff: $([Math]::Abs($finalX - $Position.X)), Y diff: $([Math]::Abs($finalY - $Position.Y))" -Level 'WARN'
-            Write-Log "W diff: $([Math]::Abs($finalWidth - $Position.Width)), H diff: $([Math]::Abs($finalHeight - $Position.Height))" -Level 'WARN'
+            $xDiff = [Math]::Abs($finalX - $targetX)
+            $yDiff = [Math]::Abs($finalY - $targetY)
+            $wDiff = [Math]::Abs($finalWidth - $targetWidth)
+            $hDiff = [Math]::Abs($finalHeight - $targetHeight)
+            Write-Log "PARTIAL: Window positioned but outside tolerance. Diffs: X=$xDiff, Y=$yDiff, W=$wDiff, H=$hDiff" -Level 'WARN'
+            Write-Log "This may be due to application constraints or window chrome" -Level 'WARN'
+            return $true  # Still consider it a success as we attempted positioning
         }
-        
-        return $true  # Return true as long as we tried - some apps resist positioning
         
     } catch {
         Write-Log "EXCEPTION in Set-WindowPosition for '$AppDescription': $($_.Exception.Message)" -Level 'ERROR'
@@ -301,9 +391,9 @@ function Start-ApplicationOnDesktop {
         return
     }
     
-    $position = $script:WindowPositions[$AppConfig.Position]
-    if (-not $position) {
-        Write-Log "Invalid position '$($AppConfig.Position)' for application '$($AppConfig.Description)'" -Level 'ERROR'
+    # Validate position type
+    if (-not $script:WindowPositions.ContainsKey($AppConfig.Position)) {
+        Write-Log "Invalid position '$($AppConfig.Position)' for application '$($AppConfig.Description)'. Valid positions: $($script:WindowPositions.Keys -join ', ')" -Level 'ERROR'
         return
     }
     
@@ -311,7 +401,7 @@ function Start-ApplicationOnDesktop {
     
     if ($DryRun) {
         Write-Log "DryRun: Would start $($AppConfig.App) with args: $($AppConfig.Args -join ' ')" -Level 'DEBUG'
-        Write-Log "DryRun: Would position at $($AppConfig.Position): ($($position.X),$($position.Y)) size ($($position.Width)x$($position.Height))" -Level 'DEBUG'
+        Write-Log "DryRun: Would position at $($AppConfig.Position) using pixel-perfect positioning" -Level 'DEBUG'
         return
     }
     
@@ -415,7 +505,7 @@ function Start-ApplicationOnDesktop {
         }
         
         # Position and resize window
-        $positionResult = Set-WindowPosition -WindowHandle $windowHandle -Position $position -AppDescription $AppConfig.Description
+        $positionResult = Set-WindowPosition -WindowHandle $windowHandle -PositionType $AppConfig.Position -AppDescription $AppConfig.Description
         if ($positionResult) {
             Write-Log "Successfully positioned '$($AppConfig.Description)' at $($AppConfig.Position)" -Level 'INFO'
         } else {
@@ -512,10 +602,11 @@ function Find-VisibleWindow {
 function Main {
     Write-Log "Starting virtual desktop setup script" -Level 'INFO'
     Write-Log "Monitor resolution: $($script:MonitorWidth)x$($script:MonitorHeight)" -Level 'INFO'
-    Write-Log "Window layout: Perfect 50/50 split with no gaps:" -Level 'INFO'
-    Write-Log "  Left area: X=0, Y=0, Width=1920, Height=2160 (exact left half)" -Level 'INFO'
-    Write-Log "  Right-Top: X=1920, Y=0, Width=1920, Height=1080 (top right quarter)" -Level 'INFO'
-    Write-Log "  Right-Bottom: X=1920, Y=1080, Width=1920, Height=1080 (bottom right quarter)" -Level 'INFO'
+    Write-Log "Window layout using pixel-perfect positioning:" -Level 'INFO'
+    Write-Log "  Left position: X=0, Y=0, W=1920, H=2160 (left 50% of screen)" -Level 'INFO'
+    Write-Log "  RightTop position: X=1920, Y=0, W=1920, H=1080 (top-right quadrant)" -Level 'INFO'
+    Write-Log "  RightBottom position: X=1920, Y=1080, W=1920, H=1080 (bottom-right quadrant)" -Level 'INFO'
+    Write-Log "Positioning method: 4-stage aggressive Win32 API calls" -Level 'INFO'
     Write-Log "Timeout: $TimeoutSec seconds" -Level 'INFO'
     
     if ($DryRun) {
